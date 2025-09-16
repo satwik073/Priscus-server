@@ -15,32 +15,58 @@ class DatabaseService {
   private client: MongoClient
   private db: Db | null = null
   private projects: Collection<Project> | null = null
+  private connectionPromise: Promise<void> | null = null
+  private isConnected = false
 
   constructor() {
-    this.client = new MongoClient(process.env.MONGODB_URI!)
+    const uri = process.env.MONGODB_URI
+    if (!uri) {
+      throw new Error('MONGODB_URI environment variable is not set')
+    }
+    this.client = new MongoClient(uri)
   }
 
   async connect(): Promise<void> {
-    try {
-      await this.client.connect()
-      this.db = this.client.db('priscus')
-      this.projects = this.db.collection<Project>('projects')
-      console.log('Connected to MongoDB')
-    } catch (error) {
-      console.error('Failed to connect to MongoDB:', error)
-      throw error
+    // If already connected, return immediately
+    if (this.isConnected) {
+      return
     }
+
+    // If connection is in progress, wait for it
+    if (this.connectionPromise) {
+      return this.connectionPromise
+    }
+
+    // Create new connection promise
+    this.connectionPromise = (async () => {
+      try {
+        await this.client.connect()
+        this.db = this.client.db('priscus')
+        this.projects = this.db.collection<Project>('projects')
+        this.isConnected = true
+        console.log('Connected to MongoDB')
+      } catch (error) {
+        console.error('Failed to connect to MongoDB:', error)
+        // Reset connection promise so we can try again
+        this.connectionPromise = null
+        throw error
+      }
+    })()
+
+    return this.connectionPromise
   }
 
   async disconnect(): Promise<void> {
-    await this.client.close()
-    console.log('Disconnected from MongoDB')
+    if (this.client && this.isConnected) {
+      await this.client.close()
+      this.isConnected = false
+      this.connectionPromise = null
+      console.log('Disconnected from MongoDB')
+    }
   }
 
   async saveProject(project: Omit<Project, '_id' | 'createdAt' | 'updatedAt'>): Promise<string> {
-    if (!this.projects) {
-      throw new Error('Database not connected')
-    }
+    await this.ensureConnected()
 
     const now = new Date()
     const projectDoc: Project = {
@@ -49,21 +75,19 @@ class DatabaseService {
       updatedAt: now
     }
 
-    const result = await this.projects.insertOne(projectDoc)
+    const result = await this.projects!.insertOne(projectDoc)
     return result.insertedId.toString()
   }
 
   async updateProject(id: string, updates: Partial<Project>): Promise<void> {
-    if (!this.projects) {
-      throw new Error('Database not connected')
-    }
+    await this.ensureConnected()
 
     // Validate ObjectId format
     if (!ObjectId.isValid(id)) {
       throw new Error(`Invalid project ID format: ${id}`)
     }
 
-    await this.projects.updateOne(
+    await this.projects!.updateOne(
       { _id: new ObjectId(id) } as any,
       { 
         $set: { 
@@ -75,39 +99,44 @@ class DatabaseService {
   }
 
   async getProject(id: string): Promise<Project | null> {
-    if (!this.projects) {
-      throw new Error('Database not connected')
-    }
+    await this.ensureConnected()
 
     // Validate ObjectId format
     if (!ObjectId.isValid(id)) {
       throw new Error(`Invalid project ID format: ${id}`)
     }
 
-    const project = await this.projects.findOne({ _id: new ObjectId(id) } as any)
+    const project = await this.projects!.findOne({ _id: new ObjectId(id) } as any)
     return project ? { ...project, _id: project._id.toString() } : null
   }
 
   async getAllProjects(): Promise<Project[]> {
-    if (!this.projects) {
-      throw new Error('Database not connected')
-    }
+    await this.ensureConnected()
 
-    const projects = await this.projects.find({}).sort({ createdAt: -1 }).toArray()
+    const projects = await this.projects!.find({}).sort({ createdAt: -1 }).toArray()
     return projects.map(project => ({ ...project, _id: project._id.toString() }))
   }
 
   async deleteProject(id: string): Promise<void> {
-    if (!this.projects) {
-      throw new Error('Database not connected')
-    }
+    await this.ensureConnected()
 
     // Validate ObjectId format
     if (!ObjectId.isValid(id)) {
       throw new Error(`Invalid project ID format: ${id}`)
     }
 
-    await this.projects.deleteOne({ _id: new ObjectId(id) } as any)
+    await this.projects!.deleteOne({ _id: new ObjectId(id) } as any)
+  }
+
+  // Helper method to ensure database is connected
+  private async ensureConnected(): Promise<void> {
+    if (!this.isConnected) {
+      await this.connect()
+    }
+    
+    if (!this.projects) {
+      throw new Error('Database not connected')
+    }
   }
 }
 

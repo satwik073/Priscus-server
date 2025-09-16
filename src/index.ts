@@ -19,8 +19,11 @@ const ProjectAnalysisSchema = z.object({
   description: z.string().min(10, 'Description must be at least 10 characters')
 });
 
-// Initialize database connection
-dbService.connect().catch(console.error);
+// Connect to database on startup - this will be awaited in the first request
+dbService.connect().catch(err => {
+  console.error('Initial database connection failed:', err);
+  // Don't throw - let the server continue and retry connection on first request
+});
 
 // Gemini API setup
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -107,7 +110,9 @@ app.get('/api/projects', async (req, res) => {
     res.json({ success: true, data: projects });
   } catch (error) {
     console.error('Error fetching projects:', error);
-    res.status(500).json({ success: false, error: 'Internal server error' });
+    // Return more informative error message
+    const errorMessage = error instanceof Error ? error.message : 'Internal server error';
+    res.status(500).json({ success: false, error: errorMessage });
   }
 });
 
@@ -314,7 +319,18 @@ app.get('/api/database-schema', async (_req, res) => {
   res.json({ success: true, data: schema });
 });
 
-const port = process.env.PORT || 4000;
-app.listen(port, () => {
-  console.log(`Server listening on http://localhost:${port}`);
+// Start the server
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
+// Global error handler
+app.use((err: any, req: any, res: any, next: any) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    success: false,
+    error: err.message || 'Internal server error',
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack
+  });
 });
